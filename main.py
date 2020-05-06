@@ -31,17 +31,17 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from requests.adapters import ConnectionError
 from requests.models import InvalidURL
 from transform import *
+import logging
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 API_URL = 'https://pgorelease.nianticlabs.com/plfe/rpc'
-LOGIN_URL = \
-    'https://sso.pokemon.com/sso/login?service=https://sso.pokemon.com/sso/oauth2.0/callbackAuthorize'
+LOGIN_URL = 'https://sso.pokemon.com/sso/login?service=https://sso.pokemon.com/sso/oauth2.0/callbackAuthorize'
 LOGIN_OAUTH = 'https://sso.pokemon.com/sso/oauth2.0/accessToken'
 APP = 'com.nianticlabs.pokemongo'
 
-with open('credentials.json') as file:
-	credentials = json.load(file)
+with open('credentials.json') as f:
+    credentials = json.load(f)
 
 PTC_CLIENT_SECRET = credentials.get('ptc_client_secret', None)
 ANDROID_ID = credentials.get('android_id', None)
@@ -56,7 +56,8 @@ SESSION.verify = False
 global_password = None
 global_token = None
 DEBUG = True
-VERBOSE_DEBUG = False  # if you want to write raw request/response to the console
+# if you want to write raw request/response to the console
+VERBOSE_DEBUG = False
 COORDS_LATITUDE = 0
 COORDS_LONGITUDE = 0
 COORDS_ALTITUDE = 0
@@ -69,7 +70,9 @@ default_step = 0.001
 pokemons = {}
 gyms = {}
 pokestops = {}
-numbertoteam = {  # At least I'm pretty sure that's it. I could be wrong and then I'd be displaying the wrong owner team of gyms.
+# At least I'm pretty sure that's it.
+# I could be wrong and then I'd be displaying the wrong owner team of gyms.
+numbertoteam = {
     0: 'Gym',
     1: 'Mystic',
     2: 'Valor',
@@ -84,6 +87,10 @@ search_thread = None
 # Login session
 login_session = None
 
+logging.basicConfig(format="%(message)s")
+logger = logging.getLogger("PokemonGo-Finder")
+
+
 def memoize(obj):
     cache = obj.cache = {}
 
@@ -93,7 +100,9 @@ def memoize(obj):
         if key not in cache:
             cache[key] = obj(*args, **kwargs)
         return cache[key]
+
     return memoizer
+
 
 def parse_unicode(bytestring):
     decoded_string = bytestring.decode(sys.getfilesystemencoding())
@@ -101,15 +110,22 @@ def parse_unicode(bytestring):
 
 
 def debug(message):
-    if DEBUG:
-        print '[-] {}'.format(message)
+    logger.debug('[-] {}'.format(message))
+
+
+def warn(message):
+    logger.warning('[!] {}'.format(message))
+
+
+def info(message):
+    logger.info('[+] {}'.format(message))
 
 
 def time_left(ms):
     s = ms / 1000
     (m, s) = divmod(s, 60)
     (h, m) = divmod(m, 60)
-    return (h, m, s)
+    return h, m, s
 
 
 def encode(cellid):
@@ -118,33 +134,33 @@ def encode(cellid):
     return ''.join(output)
 
 
-def getNeighbors():
-    origin = CellId.from_lat_lng(LatLng.from_degrees(FLOAT_LAT,
-                                                     FLOAT_LONG)).parent(15)
-    walk = [origin.id()]
+def get_neighbors():
+    _origin = CellId.from_lat_lng(LatLng.from_degrees(FLOAT_LAT,
+                                                      FLOAT_LONG)).parent(15)
+    walk = [_origin.id()]
 
     # 10 before and 10 after
 
-    next = origin.next()
-    prev = origin.prev()
-    for i in range(10):
+    _next = _origin.next()
+    prev = _origin.prev()
+    for _ in range(10):
         walk.append(prev.id())
-        walk.append(next.id())
-        next = next.next()
+        walk.append(_next.id())
+        _next = _next.next()
         prev = prev.prev()
     return walk
 
 
-def f2i(float):
-    return struct.unpack('<Q', struct.pack('<d', float))[0]
+def f2i(_float):
+    return struct.unpack('<Q', struct.pack('<d', _float))[0]
 
 
-def f2h(float):
-    return hex(struct.unpack('<Q', struct.pack('<d', float))[0])
+def f2h(_float):
+    return hex(struct.unpack('<Q', struct.pack('<d', _float))[0])
 
 
-def h2f(hex):
-    return struct.unpack('<d', struct.pack('<Q', int(hex, 16)))[0]
+def h2f(_hex):
+    return struct.unpack('<d', struct.pack('<Q', int(_hex, 16)))[0]
 
 
 def retrying_set_location(location_name):
@@ -159,9 +175,8 @@ def retrying_set_location(location_name):
             set_location(location_name)
             return
         except (GeocoderTimedOut, GeocoderServiceError), e:
-            debug(
-                'retrying_set_location: geocoder exception ({}), retrying'.format(
-                    str(e)))
+            debug('retrying_set_location: geocoder exception ' +
+                  '({}), retrying'.format(str(e)))
         time.sleep(1.25)
 
 
@@ -176,39 +191,41 @@ def set_location(location_name):
         origin_lat, origin_lon = local_lat, local_lng
     else:
         loc = geolocator.geocode(location_name)
-        origin_lat, origin_lon = local_lat, local_lng = loc.latitude, loc.longitude
+        origin_lat, origin_lon = \
+            local_lat, local_lng = \
+            loc.latitude, loc.longitude
         alt = loc.altitude
-        print '[!] Your given location: {}'.format(loc.address.encode('utf-8'))
+        warn('Your given location: {}'.format(loc.address.encode('utf-8')))
 
-    print('[!] lat/long/alt: {} {} {}'.format(local_lat, local_lng, alt))
+    warn('lat/long/alt: {} {} {}'.format(local_lat, local_lng, alt))
     set_location_coords(local_lat, local_lng, alt)
 
 
-def set_location_coords(lat, long, alt):
+def set_location_coords(lat, lng, alt):
     global COORDS_LATITUDE, COORDS_LONGITUDE, COORDS_ALTITUDE
     global FLOAT_LAT, FLOAT_LONG
     FLOAT_LAT = lat
-    FLOAT_LONG = long
+    FLOAT_LONG = lng
     COORDS_LATITUDE = f2i(lat)  # 0x4042bd7c00000000 # f2i(lat)
-    COORDS_LONGITUDE = f2i(long)  # 0xc05e8aae40000000 #f2i(long)
+    COORDS_LONGITUDE = f2i(lng)  # 0xc05e8aae40000000 #f2i(lng)
     COORDS_ALTITUDE = f2i(alt)
 
 
 def get_location_coords():
-    return (COORDS_LATITUDE, COORDS_LONGITUDE, COORDS_ALTITUDE)
+    return COORDS_LATITUDE, COORDS_LONGITUDE, COORDS_ALTITUDE
 
 
 def retrying_api_req(service, api_endpoint, access_token, *args, **kwargs):
     while True:
         try:
-            response = api_req(service, api_endpoint, access_token, *args,
-                               **kwargs)
+            response = api_req(service, api_endpoint, access_token,
+                               *args, **kwargs)
             if response:
                 return response
             debug('retrying_api_req: api_req returned None, retrying')
         except (InvalidURL, ConnectionError, DecodeError), e:
             debug('retrying_api_req: request error ({}), retrying'.format(
-                str(e)))
+                    str(e)))
         time.sleep(1)
 
 
@@ -243,12 +260,7 @@ def api_req(service, api_endpoint, access_token, *args, **kwargs):
     p_ret.ParseFromString(r.content)
 
     if VERBOSE_DEBUG:
-        print 'REQUEST:'
-        print p_req
-        print 'Response:'
-        print p_ret
-        print '''
-'''
+        debug('REQUEST:\n' + p_req + '\nResponse:\n' + p_ret + '\n')
     time.sleep(0.51)
     return p_ret
 
@@ -259,16 +271,17 @@ def get_api_endpoint(service, access_token, api=API_URL):
         profile_response = retrying_get_profile(service, access_token, api,
                                                 None)
         if not hasattr(profile_response, 'api_url'):
-            debug(
-                'retrying_get_profile: get_profile returned no api_url, retrying')
+            debug('retrying_get_profile: get_profile returned ' +
+                  'no api_url, retrying')
             profile_response = None
             continue
         if not len(profile_response.api_url):
-            debug(
-                'get_api_endpoint: retrying_get_profile returned no-len api_url, retrying')
+            debug('get_api_endpoint: retrying_get_profile returned ' +
+                  'no-len api_url, retrying')
             profile_response = None
 
     return 'https://%s/rpc' % profile_response.api_url
+
 
 def retrying_get_profile(service, access_token, api, useauth, *reqq):
     profile_response = None
@@ -276,16 +289,17 @@ def retrying_get_profile(service, access_token, api, useauth, *reqq):
         profile_response = get_profile(service, access_token, api, useauth,
                                        *reqq)
         if not hasattr(profile_response, 'payload'):
-            debug(
-                'retrying_get_profile: get_profile returned no payload, retrying')
+            debug('retrying_get_profile: get_profile returned ' +
+                  'no payload, retrying')
             profile_response = None
             continue
         if not profile_response.payload:
-            debug(
-                'retrying_get_profile: get_profile returned no-len payload, retrying')
+            debug('retrying_get_profile: get_profile returned ' +
+                  'no-len payload, retrying')
             profile_response = None
 
     return profile_response
+
 
 def get_profile(service, access_token, api, useauth, *reqq):
     req = pokemon_pb2.RequestEnvelop()
@@ -315,8 +329,9 @@ def get_profile(service, access_token, api, useauth, *reqq):
         req5.MergeFrom(reqq[4])
     return retrying_api_req(service, api, access_token, req, useauth=useauth)
 
+
 def login_google(username, password):
-    print '[!] Google login for: {}'.format(username)
+    warn('Google login for: {}'.format(username))
     r1 = perform_master_login(username, password, ANDROID_ID)
     r2 = perform_oauth(username,
                        r1.get('Token', ''),
@@ -326,8 +341,9 @@ def login_google(username, password):
                        CLIENT_SIG, )
     return r2.get('Auth')
 
+
 def login_ptc(username, password):
-    print '[!] PTC login for: {}'.format(username)
+    warn('PTC login for: {}'.format(username))
     head = {'User-Agent': 'Niantic App'}
     r = SESSION.get(LOGIN_URL, headers=head)
     if r is None:
@@ -335,31 +351,32 @@ def login_ptc(username, password):
 
     try:
         jdata = json.loads(r.content)
-    except ValueError, e:
+    except ValueError:
         debug('login_ptc: could not decode JSON from {}'.format(r.content))
         return None
 
-    # Maximum password length is 15 (sign in page enforces this limit, API does not)
+    # Maximum password length is 15
+    # (sign in page enforces this limit, API does not)
 
     if len(password) > 15:
-        print '[!] Trimming password to 15 characters'
+        warn('Trimming password to 15 characters')
         password = password[:15]
 
-    data = {
+    _data = {
         'lt': jdata['lt'],
         'execution': jdata['execution'],
         '_eventId': 'submit',
         'username': username,
         'password': password,
     }
-    r1 = SESSION.post(LOGIN_URL, data=data, headers=head)
+    r1 = SESSION.post(LOGIN_URL, data=_data, headers=head)
 
-    ticket = None
+    # ticket = None
     try:
         ticket = re.sub('.*ticket=', '', r1.history[0].headers['Location'])
-    except Exception, e:
+    except Exception:
         if DEBUG:
-            print r1.json()['errors'][0]
+            debug(r1.json()['errors'][0])
         return None
 
     data1 = {
@@ -388,13 +405,13 @@ def get_heartbeat(service,
     m = pokemon_pb2.RequestEnvelop.MessageSingleString()
     m.bytes = '05daf51635c82611d1aac95c0b051d3ec088a930'
     m5.message = m.SerializeToString()
-    walk = sorted(getNeighbors())
+    walk = sorted(get_neighbors())
     m1 = pokemon_pb2.RequestEnvelop.Requests()
     m1.type = 106
     m = pokemon_pb2.RequestEnvelop.MessageQuad()
     m.f1 = ''.join(map(encode, walk))
-    m.f2 = \
-        "\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
+    m.f2 = "\000\000\000\000\000\000\000\000\000\000" + \
+           "\000\000\000\000\000\000\000\000\000\000\000"
     m.lat = COORDS_LATITUDE
     m.long = COORDS_LONGITUDE
     m1.message = m.SerializeToString()
@@ -417,9 +434,13 @@ def get_heartbeat(service,
     heartbeat.ParseFromString(payload)
     return heartbeat
 
+
 def get_token(service, username, password):
     """
     Get token if it's not None
+    :param password:
+    :param username:
+    :param service:
     :return:
     :rtype:
     """
@@ -433,7 +454,6 @@ def get_token(service, username, password):
         return global_token
     else:
         return global_token
-
 
 
 def get_args():
@@ -462,55 +482,57 @@ def get_args():
         "username": None
     }
 
-    INTEGER_STR = "int"
-    BOOLEAN_STR = "bool"
-    STRING_STR = "str"
+    integer_str = "int"
+    boolean_str = "bool"
+    string_str = "str"
     default_args_type = {
-        "DEBUG": BOOLEAN_STR,
-        "ampm_clock": BOOLEAN_STR,
-        "auth_service": STRING_STR,
-        "auto_refresh": INTEGER_STR,
-        "china": BOOLEAN_STR,
-        "debug": BOOLEAN_STR,
-        "display_gym": BOOLEAN_STR,
-        "display_pokestop": BOOLEAN_STR,
-        "do_not_notify": STRING_STR,
-        "host": STRING_STR,
-        "ignore": STRING_STR,
-        "locale": STRING_STR,
-        "location": STRING_STR,
-        "notify": STRING_STR,
-        "only": STRING_STR,
-        "onlylure": BOOLEAN_STR,
-        "password": STRING_STR,
-        "port": INTEGER_STR,
-        "pushbullet": STRING_STR,
-        "step_limit": INTEGER_STR,
-        "username": STRING_STR
+        "DEBUG": boolean_str,
+        "ampm_clock": boolean_str,
+        "auth_service": string_str,
+        "auto_refresh": integer_str,
+        "china": boolean_str,
+        "debug": boolean_str,
+        "display_gym": boolean_str,
+        "display_pokestop": boolean_str,
+        "do_not_notify": string_str,
+        "host": string_str,
+        "ignore": string_str,
+        "locale": string_str,
+        "location": string_str,
+        "notify": string_str,
+        "only": string_str,
+        "onlylure": boolean_str,
+        "password": string_str,
+        "port": integer_str,
+        "pushbullet": string_str,
+        "step_limit": integer_str,
+        "username": string_str
     }
     # load config file
     with open('config.json') as data_file:
-        data = json.load(data_file)
-        for key in data:
+        _data = json.load(data_file)
+        for key in _data:
             if key not in default_args_type:
-                warnings.warn( 'Config Item ' + key + 'Does Not Have a Default Type' )
+                warnings.warn('Config Item ' + key +
+                              'Does Not Have a Default Type')
 
-            if default_args_type[key] == INTEGER_STR:
-                default_args[key] = int(data[key])
+            if default_args_type[key] == integer_str:
+                default_args[key] = int(_data[key])
 
-            elif default_args_type[key] == BOOLEAN_STR:
-                default_args[key] = data[key]
+            elif default_args_type[key] == boolean_str:
+                default_args[key] = _data[key]
 
             else:
-                if default_args_type[key] != STRING_STR:
-                    warnings.warn( 'Unsupported Default Args Type' )
+                if default_args_type[key] != string_str:
+                    warnings.warn('Unsupported Default Args Type')
 
-                default_args[key] = str(data[key])
+                default_args[key] = str(_data[key])
         # create namespace obj
         namespace = argparse.Namespace()
         for key in default_args:
             vars(namespace)[key] = default_args[key]
         return namespace
+
 
 def login(args):
     global login_session
@@ -519,46 +541,46 @@ def login(args):
 
     global global_password
     if not global_password:
-      if args.password:
-        global_password = args.password
-      else:
-        global_password = getpass.getpass()
+        if args.password:
+            global_password = args.password
+        else:
+            global_password = getpass.getpass()
 
     access_token = get_token(args.auth_service, args.username, global_password)
     if access_token is None:
         raise Exception('[-] Wrong username/password')
 
-    print '[+] RPC Session Token: {} ...'.format(access_token[:25])
+    info('RPC Session Token: {} ...'.format(access_token[:25]))
 
     api_endpoint = get_api_endpoint(args.auth_service, access_token)
     if api_endpoint is None:
         raise Exception('[-] RPC server offline')
 
-    print '[+] Received API endpoint: {}'.format(api_endpoint)
+    info('Received API endpoint: {}'.format(api_endpoint))
 
     profile_response = retrying_get_profile(args.auth_service, access_token,
                                             api_endpoint, None)
     if profile_response is None or not profile_response.payload:
         raise Exception('Could not get profile')
 
-    print '[+] Login successful'
+    info('Login successful')
 
     payload = profile_response.payload[0]
     profile = pokemon_pb2.ResponseEnvelop.ProfilePayload()
     profile.ParseFromString(payload)
-    print '[+] Username: {}'.format(profile.profile.username)
+    info('Username: {}'.format(profile.profile.username))
 
     creation_time = \
-        datetime.fromtimestamp(int(profile.profile.creation_time)
-                               / 1000)
-    print '[+] You started playing Pokemon Go on: {}'.format(
-        creation_time.strftime('%Y-%m-%d %H:%M:%S'))
+        datetime.fromtimestamp(int(profile.profile.creation_time) / 1000)
+    info('You started playing Pokemon Go on: {}'.format(
+            creation_time.strftime('%Y-%m-%d %H:%M:%S')))
 
     for curr in profile.profile.currency:
-        print '[+] {}: {}'.format(curr.type, curr.amount)
+        info('{}: {}'.format(curr.type, curr.amount))
 
     login_session = api_endpoint, access_token, profile_response
     return login_session
+
 
 def main():
     full_path = os.path.realpath(__file__)
@@ -567,30 +589,30 @@ def main():
     args = get_args()
 
     if args.auth_service not in ['ptc', 'google']:
-        print '[!] Invalid Auth service specified'
+        warn('Invalid Auth service specified')
         return
 
-    print('[+] Locale is ' + args.locale)
-    pokemonsJSON = json.load(
-        open(path + '/locales/pokemon.' + args.locale + '.json'))
+    info('Locale is ' + args.locale)
+    pokemons_json = json.load(
+            open(path + '/locales/pokemon.' + args.locale + '.json'))
 
     if args.debug:
         global DEBUG
         DEBUG = True
-        print '[!] DEBUG mode on'
+        warn('DEBUG mode on')
 
     # only get location for first run
     if not (FLOAT_LAT and FLOAT_LONG):
-      print('[+] Getting initial location')
-      retrying_set_location(args.location)
+        info('Getting initial location')
+        retrying_set_location(args.location)
 
     if args.auto_refresh:
         global auto_refresh
         auto_refresh = int(args.auto_refresh) * 1000
 
     if args.ampm_clock:
-    	global is_ampm_clock
-    	is_ampm_clock = True
+        global is_ampm_clock
+        is_ampm_clock = True
 
     api_endpoint, access_token, profile_response = login(args)
 
@@ -610,29 +632,32 @@ def main():
     y = 0
     dx = 0
     dy = -1
-    steplimit2 = steplimit**2
+    steplimit2 = steplimit ** 2
     for step in range(steplimit2):
-        #starting at 0 index
-        debug('looping: step {} of {}'.format((step+1), steplimit**2))
-        #debug('steplimit: {} x: {} y: {} pos: {} dx: {} dy {}'.format(steplimit2, x, y, pos, dx, dy))
+        # starting at 0 index
+        debug('looping: step {} of {}'.format((step + 1), steplimit ** 2))
+        # debug('steplimit: {} x: {} y: {} pos: {} dx: {} dy {}'.format(
+        #         steplimit2, x, y, pos, dx, dy))
         # Scan location math
-        if -steplimit2 / 2 < x <= steplimit2 / 2 and -steplimit2 / 2 < y <= steplimit2 / 2:
-            set_location_coords(x * 0.0025 + origin_lat, y * 0.0025 + origin_lon, 0)
+        if -steplimit2 / 2 < x <= steplimit2 / 2\
+                and -steplimit2 / 2 < y <= steplimit2 / 2:
+            set_location_coords(x * 0.0025 + origin_lat,
+                                y * 0.0025 + origin_lon, 0)
         if x == y or x < 0 and x == -y or x > 0 and x == 1 - y:
             (dx, dy) = (-dy, dx)
 
         (x, y) = (x + dx, y + dy)
 
         process_step(args, api_endpoint, access_token, profile_response,
-                     pokemonsJSON, ignore, only)
+                     pokemons_json, ignore, only)
 
-        print('Completed: ' + str(
-            ((step+1) + pos * .25 - .25) / (steplimit2) * 100) + '%')
+        info('Completed: ' + str(
+                ((step + 1) + pos * .25 - .25) / steplimit2 * 100) + '%')
 
     global NEXT_LAT, NEXT_LONG
     if (NEXT_LAT and NEXT_LONG and
             (NEXT_LAT != FLOAT_LAT or NEXT_LONG != FLOAT_LONG)):
-        print('Update to next location %f, %f' % (NEXT_LAT, NEXT_LONG))
+        info('Update to next location %f, %f' % (NEXT_LAT, NEXT_LONG))
         set_location_coords(NEXT_LAT, NEXT_LONG, 0)
         NEXT_LAT = 0
         NEXT_LONG = 0
@@ -643,13 +668,13 @@ def main():
 
 
 def process_step(args, api_endpoint, access_token, profile_response,
-                 pokemonsJSON, ignore, only):
-    print('[+] Searching for Pokemon at location {} {}'.format(FLOAT_LAT, FLOAT_LONG))
-    origin = LatLng.from_degrees(FLOAT_LAT, FLOAT_LONG)
+                 pokemons_json, ignore, only):
+    info('Searching for Pokemon at location {} {}'.format(
+            FLOAT_LAT, FLOAT_LONG))
+    _origin = LatLng.from_degrees(FLOAT_LAT, FLOAT_LONG)
     step_lat = FLOAT_LAT
     step_long = FLOAT_LONG
-    parent = CellId.from_lat_lng(LatLng.from_degrees(FLOAT_LAT,
-                                                     FLOAT_LONG)).parent(15)
+    parent = CellId.from_lat_lng(_origin).parent(15)
     h = get_heartbeat(args.auth_service, api_endpoint, access_token,
                       profile_response)
     hs = [h]
@@ -659,8 +684,8 @@ def process_step(args, api_endpoint, access_token, profile_response,
         latlng = LatLng.from_point(Cell(child).get_center())
         set_location_coords(latlng.lat().degrees, latlng.lng().degrees, 0)
         hs.append(
-            get_heartbeat(args.auth_service, api_endpoint, access_token,
-                          profile_response))
+                get_heartbeat(args.auth_service, api_endpoint, access_token,
+                              profile_response))
     set_location_coords(step_lat, step_long, 0)
     visible = []
 
@@ -668,30 +693,37 @@ def process_step(args, api_endpoint, access_token, profile_response,
         try:
             for cell in hh.cells:
                 for wild in cell.WildPokemon:
-                    hash = wild.SpawnPointId;
-                    if hash not in seen.keys() or (seen[hash].TimeTillHiddenMs <= wild.TimeTillHiddenMs):
+                    _hash = wild.SpawnPointId
+                    if _hash not in seen.keys()\
+                            or (seen[_hash].TimeTillHiddenMs <=
+                                wild.TimeTillHiddenMs):
                         visible.append(wild)
-                    seen[hash] = wild.TimeTillHiddenMs
+                    seen[_hash] = wild.TimeTillHiddenMs
                 if cell.Fort:
                     for Fort in cell.Fort:
-                        if Fort.Enabled == True:
+                        if Fort.Enabled:
                             if args.china:
                                 (Fort.Latitude, Fort.Longitude) = \
-transform_from_wgs_to_gcj(Location(Fort.Latitude, Fort.Longitude))
+                                    transform_from_wgs_to_gcj(
+                                        Location(Fort.Latitude, Fort.Longitude))
                             if Fort.GymPoints and args.display_gym:
-                                gyms[Fort.FortId] = [Fort.Team, Fort.Latitude,
-                                                     Fort.Longitude, Fort.GymPoints]
+                                gyms[Fort.FortId] = [Fort.Team,
+                                                     Fort.Latitude,
+                                                     Fort.Longitude,
+                                                     Fort.GymPoints]
 
                             elif Fort.FortType \
-                                and args.display_pokestop:
+                                    and args.display_pokestop:
                                 expire_time = 0
                                 if Fort.LureInfo.LureExpiresTimestampMs:
-                                    expire_time = datetime\
-                                        .fromtimestamp(Fort.LureInfo.LureExpiresTimestampMs / 1000.0)\
+                                    expire_time = datetime.fromtimestamp(
+                                            Fort.LureInfo
+                                            .LureExpiresTimestampMs / 1000.0)\
                                         .strftime("%H:%M:%S")
-                                if (expire_time != 0 or not args.onlylure):
+                                if expire_time != 0 or not args.onlylure:
                                     pokestops[Fort.FortId] = [Fort.Latitude,
-                                                              Fort.Longitude, expire_time]
+                                                              Fort.Longitude,
+                                                              expire_time]
         except AttributeError:
             # Reset login session if problems happen
             global login_session, global_token
@@ -701,7 +733,7 @@ transform_from_wgs_to_gcj(Location(Fort.Latitude, Fort.Longitude))
 
     for poke in visible:
         pokeid = str(poke.pokemon.PokemonId)
-        pokename = pokemonsJSON[pokeid]
+        pokename = pokemons_json[pokeid]
         if args.ignore:
             if pokename.lower() in ignore or pokeid in ignore:
                 continue
@@ -709,13 +741,11 @@ transform_from_wgs_to_gcj(Location(Fort.Latitude, Fort.Longitude))
             if pokename.lower() not in only and pokeid not in only:
                 continue
 
-        disappear_timestamp = time.time() + poke.TimeTillHiddenMs \
-            / 1000
+        disappear_timestamp = time.time() + poke.TimeTillHiddenMs / 1000
 
         if args.china:
-            (poke.Latitude, poke.Longitude) = \
-                transform_from_wgs_to_gcj(Location(poke.Latitude,
-                    poke.Longitude))
+            (poke.Latitude, poke.Longitude) = transform_from_wgs_to_gcj(
+                    Location(poke.Latitude, poke.Longitude))
 
         pokemon_obj = {
             "lat": poke.Latitude,
@@ -725,25 +755,24 @@ transform_from_wgs_to_gcj(Location(Fort.Latitude, Fort.Longitude))
             "name": pokename
         }
 
-        
-
-        
-		#change
-	print "Pokemon :", pokemon_obj
+        # change
+        info("Pokemon: " + str(pokemon_obj))
         if poke.SpawnPointId not in pokemons:
-             pokemons[poke.SpawnPointId] = pokemon_obj
-		     
-             notifier.pokemon_found(pokemon_obj)
-        #change
-		
+            pokemons[poke.SpawnPointId] = pokemon_obj
+
+            notifier.pokemon_found(pokemon_obj)
+            # change
+
+
 def clear_stale_pokemons():
     current_time = time.time()
 
     for pokemon_key in pokemons.keys():
         pokemon = pokemons[pokemon_key]
         if current_time > pokemon['disappear_time']:
-            print "[+] removing stale pokemon %s at %f, %f from list" % (
-                pokemon['name'].encode('utf-8'), pokemon['lat'], pokemon['lng'])
+            info("removing stale pokemon %s at %f, %f from list" % (
+                pokemon['name'].encode('utf-8'),
+                pokemon['lat'], pokemon['lng']))
             del pokemons[pokemon_key]
 
 
@@ -751,7 +780,9 @@ def register_background_thread(initial_registration=False):
     """
     Start a background thread to search for Pokemon
     while Flask is still able to serve requests for the map
-    :param initial_registration: True if first registration and thread should start immediately, False if it's being called by the finishing thread to schedule a refresh
+    :param initial_registration: True if first registration and thread should
+    start immediately, False if it's being called by the finishing thread to
+    schedule a refresh
     :return: None
     """
 
@@ -760,12 +791,12 @@ def register_background_thread(initial_registration=False):
 
     if initial_registration:
         if not werkzeug.serving.is_running_from_reloader():
-            debug(
-                'register_background_thread: not running inside Flask so not starting thread')
+            debug('register_background_thread: not running ' +
+                  'inside Flask so not starting thread')
             return
         if search_thread:
-            debug(
-                'register_background_thread: initial registration requested but thread already running')
+            debug('register_background_thread: initial registration ' +
+                  'requested but thread already running')
             return
 
         debug('register_background_thread: initial registration')
@@ -781,10 +812,10 @@ def register_background_thread(initial_registration=False):
 
 
 def create_app():
-    app = Flask(__name__, template_folder='templates')
+    _app = Flask(__name__, template_folder='templates')
 
-    GoogleMaps(app, key=GOOGLEMAPS_KEY)
-    return app
+    GoogleMaps(_app, key=GOOGLEMAPS_KEY)
+    return _app
 
 
 app = create_app()
@@ -794,6 +825,7 @@ app = create_app()
 def data():
     """ Gets all the PokeMarkers via REST """
     return json.dumps(get_pokemarkers())
+
 
 @app.route('/raw_data')
 def raw_data():
@@ -817,8 +849,10 @@ def config():
 def fullmap():
     clear_stale_pokemons()
 
-    return render_template(
-        'example_fullmap.html', key=GOOGLEMAPS_KEY, fullmap=get_map(), auto_refresh=auto_refresh)
+    return render_template('example_fullmap.html',
+                           key=GOOGLEMAPS_KEY,
+                           fullmap=get_map(),
+                           auto_refresh=auto_refresh)
 
 
 @app.route('/next_loc')
@@ -828,16 +862,16 @@ def next_loc():
     lat = flask.request.args.get('lat', '')
     lon = flask.request.args.get('lon', '')
     if not (lat and lon):
-        print('[-] Invalid next location: %s,%s' % (lat, lon))
+        debug('Invalid next location: %s,%s' % (lat, lon))
     else:
-        print('[+] Saved next location as %s,%s' % (lat, lon))
+        info('Saved next location as %s,%s' % (lat, lon))
         NEXT_LAT = float(lat)
         NEXT_LONG = float(lon)
         return 'ok'
 
 
 def get_pokemarkers():
-    pokeMarkers = [{
+    poke_markers = [{
         'icon': icons.dots.red,
         'lat': origin_lat,
         'lng': origin_lon,
@@ -850,22 +884,43 @@ def get_pokemarkers():
     for pokemon_key in pokemons:
         pokemon = pokemons[pokemon_key]
         datestr = datetime.fromtimestamp(pokemon[
-            'disappear_time'])
+                                             'disappear_time'])
         dateoutput = datestr.strftime("%H:%M:%S")
         if is_ampm_clock:
-        	dateoutput = datestr.strftime("%I:%M%p").lstrip('0')
+            dateoutput = datestr.strftime("%I:%M%p").lstrip('0')
         pokemon['disappear_time_formatted'] = dateoutput
 
-        LABEL_TMPL = u'''
-<div><b>{name}</b><span> - </span><small><a href='http://www.pokemon.com/us/pokedex/{id}' target='_blank' title='View in Pokedex'>#{id}</a></small></div>
-<div>Disappears at - {disappear_time_formatted} <span class='label-countdown' disappears-at='{disappear_time}'></span></div>
-<div><a href='https://www.google.com/maps/dir/Current+Location/{lat},{lng}' target='_blank' title='View in Maps'>Get Directions</a></div>
+        label_tmpl = u'''
+<div>
+  <b>{name}</b>
+  <span> - </span>
+  <small>
+    <a
+        href='http://www.pokemon.com/us/pokedex/{id}'
+        target='_blank'
+        title='View in Pokedex'>
+      #{id}
+    </a>
+  </small>
+</div>
+<div>
+  Disappears at - {disappear_time_formatted}
+  <span class='label-countdown' disappears-at='{disappear_time}'></span>
+</div>
+<div>
+  <a
+      href='https://www.google.com/maps/dir/Current+Location/{lat},{lng}'
+      target='_blank'
+      title='View in Maps'>
+    Get Directions
+  </a>
+</div>
 '''
-        label = LABEL_TMPL.format(**pokemon)
+        label = label_tmpl.format(**pokemon)
         #  NOTE: `infobox` field doesn't render multiple line string in frontend
         label = label.replace('\n', '')
 
-        pokeMarkers.append({
+        poke_markers.append({
             'type': 'pokemon',
             'key': pokemon_key,
             'disappear_time': pokemon['disappear_time'],
@@ -886,20 +941,37 @@ def get_pokemarkers():
         if gym[0] == 3:
             color = "rgba(254, 217, 40, .6)"
 
-        icon = 'static/forts/'+numbertoteam[gym[0]]+'_large.png'
-        pokeMarkers.append({
+        icon = 'static/forts/' + numbertoteam[gym[0]] + '_large.png'
+        poke_markers.append({
             'icon': 'static/forts/' + numbertoteam[gym[0]] + '.png',
             'type': 'gym',
             'key': gym_key,
             'disappear_time': -1,
             'lat': gym[1],
             'lng': gym[2],
-            'infobox': "<div><center><small>Gym owned by:</small><br><b style='color:" + color + "'>Team " + numbertoteam[gym[0]] + "</b><br><img id='" + numbertoteam[gym[0]] + "' height='100px' src='"+icon+"'><br>Prestige: " + str(gym[3]) + "</center>"
+            'infobox':
+                """
+                <div>
+                  <center>
+                    <small>Gym owned by:</small>
+                    <br>
+                    <b style='color:%s'>Team %s</b>
+                    <br>
+                    <img id='%s' height='100px' src='%s'>
+                    <br>
+                    Prestige: %s
+                  </center>
+                </div>
+                """ % (str(color),
+                       str(numbertoteam[gym[0]]),
+                       str(numbertoteam[gym[0]]),
+                       str(icon),
+                       str(gym[3]))
         })
     for stop_key in pokestops:
         stop = pokestops[stop_key]
         if stop[2] > 0:
-            pokeMarkers.append({
+            poke_markers.append({
                 'type': 'lured_stop',
                 'key': stop_key,
                 'disappear_time': -1,
@@ -909,7 +981,7 @@ def get_pokemarkers():
                 'infobox': 'Lured Pokestop, expires at ' + stop[2],
             })
         else:
-            pokeMarkers.append({
+            poke_markers.append({
                 'type': 'stop',
                 'key': stop_key,
                 'disappear_time': -1,
@@ -918,21 +990,29 @@ def get_pokemarkers():
                 'lng': stop[1],
                 'infobox': 'Pokestop',
             })
-    return pokeMarkers
+    return poke_markers
 
 
 def get_map():
-    fullmap = Map(
-        identifier="fullmap2",
-        style='height:100%;width:100%;top:0;left:0;position:absolute;z-index:200;',
-        lat=origin_lat,
-        lng=origin_lon,
-        markers=get_pokemarkers(),
-        zoom='15', )
-    return fullmap
+    _fullmap = Map(
+            identifier="fullmap2",
+            style='height: 100%;'
+                  'width: 100%;'
+                  'top: 0;'
+                  'left: 0;'
+                  'position: absolute;'
+                  'z-index: 200;',
+            lat=origin_lat,
+            lng=origin_lon,
+            markers=get_pokemarkers(),
+            zoom='15', )
+    return _fullmap
 
 
 if __name__ == '__main__':
-    args = get_args()
+    arguments = get_args()
+    logger.setLevel(logging.INFO)
+    if DEBUG:
+        logger.setLevel(logging.DEBUG)
     register_background_thread(initial_registration=True)
-    app.run(debug=True, threaded=True, host=args.host, port=args.port)
+    app.run(debug=True, threaded=True, host=arguments.host, port=arguments.port)
